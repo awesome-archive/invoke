@@ -1,7 +1,8 @@
 import re
 
 import six
-from spec import Spec, eq_
+
+from mock import patch
 
 import invoke
 import invoke.collection
@@ -10,25 +11,26 @@ import invoke.tasks
 import invoke.program
 
 
-class Init(Spec):
+class Init:
     "__init__"
+
     def dunder_version_info(self):
-        assert hasattr(invoke, '__version_info__')
+        assert hasattr(invoke, "__version_info__")
         ver = invoke.__version_info__
         assert isinstance(ver, tuple)
         assert all(isinstance(x, int) for x in ver)
 
     def dunder_version(self):
-        assert hasattr(invoke, '__version__')
+        assert hasattr(invoke, "__version__")
         ver = invoke.__version__
         assert isinstance(ver, six.string_types)
-        assert re.match(r'\d+\.\d+\.\d+', ver)
+        assert re.match(r"\d+\.\d+\.\d+", ver)
 
     def dunder_version_looks_generated_from_dunder_version_info(self):
         # Meh.
-        ver_part = invoke.__version__.split('.')[0]
+        ver_part = invoke.__version__.split(".")[0]
         ver_info_part = invoke.__version_info__[0]
-        eq_(ver_part, str(ver_info_part))
+        assert ver_part == str(ver_info_part)
 
     class exposes_bindings:
         def task_decorator(self):
@@ -50,13 +52,16 @@ class Init(Spec):
             assert invoke.Config is invoke.config.Config
 
         def pty_size_function(self):
-            assert invoke.pty_size is invoke.platform.pty_size
+            assert invoke.pty_size is invoke.terminals.pty_size
 
         def local_class(self):
             assert invoke.Local is invoke.runners.Local
 
         def runner_class(self):
             assert invoke.Runner is invoke.runners.Runner
+
+        def promise_class(self):
+            assert invoke.Promise is invoke.runners.Promise
 
         def failure_class(self):
             assert invoke.Failure is invoke.runners.Failure
@@ -86,6 +91,15 @@ class Init(Spec):
         def argument(self):
             assert invoke.Argument is invoke.parser.Argument
 
+        def parsercontext(self):
+            assert invoke.ParserContext is invoke.parser.ParserContext
+
+        def parser(self):
+            assert invoke.Parser is invoke.parser.Parser
+
+        def parseresult(self):
+            assert invoke.ParseResult is invoke.parser.ParseResult
+
         def executor(self):
             assert invoke.Executor is invoke.executor.Executor
 
@@ -95,3 +109,18 @@ class Init(Spec):
         def Call(self):
             # Starting to think we shouldn't bother with lowercase-c call...
             assert invoke.Call is invoke.tasks.Call
+
+    class offers_singletons:
+        @patch("invoke.Context")
+        def run(self, Context):
+            result = invoke.run("foo", bar="biz")
+            ctx = Context.return_value
+            ctx.run.assert_called_once_with("foo", bar="biz")
+            assert result is ctx.run.return_value
+
+        @patch("invoke.Context")
+        def sudo(self, Context):
+            result = invoke.sudo("foo", bar="biz")
+            ctx = Context.return_value
+            ctx.sudo.assert_called_once_with("foo", bar="biz")
+            assert result is ctx.sudo.return_value

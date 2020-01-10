@@ -1,10 +1,11 @@
 from contextlib import contextmanager
-from functools import wraps
 from resource import getrusage, RUSAGE_SELF
 import sys
 import time
 
-from spec import skip
+from invoke.vendor.six import wraps
+
+from pytest import skip
 
 
 def current_cpu_usage():
@@ -29,7 +30,7 @@ def assert_cpu_usage(lt, verbose=False):
     usage_diff = end_usage - start_usage
     time_diff = end_time - start_time
 
-    if time_diff == 0: # Apparently possible!
+    if time_diff == 0:  # Apparently possible!
         time_diff = 0.000001
 
     percentage = (usage_diff / time_diff) * 100.0
@@ -47,9 +48,10 @@ def only_utf8(f):
     # TODO: use actual test selection labels or whatever nose has
     @wraps(f)
     def inner(*args, **kwargs):
-        if getattr(sys.stdout, 'encoding', None) == 'UTF-8':
+        if getattr(sys.stdout, "encoding", None) == "UTF-8":
             return f(*args, **kwargs)
         # TODO: could remove this so they show green, but figure yellow is more
         # appropriate
         skip()
+
     return inner

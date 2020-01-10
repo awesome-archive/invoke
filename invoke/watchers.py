@@ -30,7 +30,10 @@ class StreamWatcher(threading.local):
         `StreamWatcher` subclasses `threading.local` so that its instances can
         be used to 'watch' both subprocess stdout and stderr in separate
         threads.
+
+    .. versionadded:: 1.0
     """
+
     def submit(self, stream):
         """
         Act on ``stream`` data, potentially returning responses.
@@ -40,6 +43,8 @@ class StreamWatcher(threading.local):
 
         :returns:
             An iterable of Unicode strings (which may be empty).
+
+        .. versionadded:: 1.0
         """
         raise NotImplementedError
 
@@ -49,10 +54,12 @@ class Responder(StreamWatcher):
     A parameterizable object that submits responses to specific patterns.
 
     Commonly used to implement password auto-responds for things like ``sudo``.
+
+    .. versionadded:: 1.0
     """
 
     def __init__(self, pattern, response):
-        """
+        r"""
         Imprint this `Responder` with necessary parameters.
 
         :param pattern:
@@ -79,6 +86,8 @@ class Responder(StreamWatcher):
         :param unicode pattern: The pattern to search for.
         :param unicode index_attr: The name of the index attribute to use.
         :returns: An iterable of string matches.
+
+        .. versionadded:: 1.0
         """
         # NOTE: generifies scanning so it can be used to scan for >1 pattern at
         # once, e.g. in FailingResponder.
@@ -94,7 +103,7 @@ class Responder(StreamWatcher):
 
     def submit(self, stream):
         # Iterate over findall() response in case >1 match occurred.
-        for _ in self.pattern_matches(stream, self.pattern, 'index'):
+        for _ in self.pattern_matches(stream, self.pattern, "index"):
             yield self.response
 
 
@@ -105,7 +114,10 @@ class FailingResponder(Responder):
     This class adds a ``sentinel`` parameter to ``__init__``, and its
     ``submit`` will raise `.ResponseNotAccepted` if it detects that sentinel
     value in the stream.
+
+    .. versionadded:: 1.0
     """
+
     def __init__(self, pattern, response, sentinel):
         super(FailingResponder, self).__init__(pattern, response)
         self.sentinel = sentinel
@@ -116,13 +128,12 @@ class FailingResponder(Responder):
         # Behave like regular Responder initially
         response = super(FailingResponder, self).submit(stream)
         # Also check stream for our failure sentinel
-        failed = self.pattern_matches(
-            stream, self.sentinel, 'failure_index'
-        )
+        failed = self.pattern_matches(stream, self.sentinel, "failure_index")
         # Error out if we seem to have failed after a previous response.
         if self.tried and failed:
-            err = "Auto-response to r\"{0}\" failed with {1!r}!".format(
-                self.pattern, self.sentinel)
+            err = 'Auto-response to r"{}" failed with {!r}!'.format(
+                self.pattern, self.sentinel
+            )
             raise ResponseNotAccepted(err)
         # Once we see that we had a response, take note
         if response:

@@ -6,14 +6,10 @@ exceptions used for message-passing" to simply "we needed to express an error
 condition in a way easily told apart from other, truly unexpected errors".
 """
 
-from collections import namedtuple
 from traceback import format_exception
 from pprint import pformat
 
-try:
-    from .vendor import six
-except ImportError:
-    import six
+from .util import six
 
 
 class CollectionNotFound(Exception):
@@ -35,27 +31,70 @@ class Failure(Exception):
 
     * ``result``: a `.Result` instance with info about the command being
       executed and, if it ran to completion, how it exited.
-    * ``reason``: ``None``, if the command finished; or an exception instance
-      if e.g. a `.StreamWatcher` raised `WatcherError`.
+    * ``reason``: a wrapped exception instance if applicable (e.g. a
+      `.StreamWatcher` raised `WatcherError`) or ``None`` otherwise, in which
+      case, it's probably a `Failure` subclass indicating its own specific
+      nature, such as `UnexpectedExit` or `CommandTimedOut`.
 
     This class is only rarely raised by itself; most of the time `.Runner.run`
     (or a wrapper of same, such as `.Context.sudo`) will raise a specific
     subclass like `UnexpectedExit` or `AuthFailure`.
+
+    .. versionadded:: 1.0
     """
+
     def __init__(self, result, reason=None):
         self.result = result
         self.reason = reason
 
+    def streams_for_display(self):
+        """
+        Return stdout/err streams as necessary for error display.
+
+        Subject to the following rules:
+
+        - If a given stream was *not* hidden during execution, a placeholder is
+          used instead, to avoid printing it twice.
+        - Only the last 10 lines of stream text is included.
+        - PTY-driven execution will lack stderr, and a specific message to this
+          effect is returned instead of a stderr dump.
+
+        :returns: Two-tuple of stdout, stderr strings.
+
+        .. versionadded:: 1.3
+        """
+        already_printed = " already printed"
+        if "stdout" not in self.result.hide:
+            stdout = already_printed
+        else:
+            stdout = self.result.tail("stdout")
+        if self.result.pty:
+            stderr = " n/a (PTYs have no stderr)"
+        else:
+            if "stderr" not in self.result.hide:
+                stderr = already_printed
+            else:
+                stderr = self.result.tail("stderr")
+        return stdout, stderr
+
     def __repr__(self):
-        return str(self)
+        return self._repr()
 
-
-def _tail(stream):
-    # TODO: make configurable
-    # TODO: preserve alternate line endings? Mehhhh
-    tail = "\n\n" + "\n".join(stream.splitlines()[-10:])
-    # NOTE: no trailing \n preservation; easier for below display if normalized
-    return tail
+    def _repr(self, **kwargs):
+        """
+        Return ``__repr__``-like value from inner result + any kwargs.
+        """
+        # TODO: expand?
+        # TODO: truncate command?
+        template = "<{}: cmd={!r}{}>"
+        rest = ""
+        if kwargs:
+            rest = " " + " ".join(
+                "{}={}".format(key, value) for key, value in kwargs.items()
+            )
+        return template.format(
+            self.__class__.__name__, self.result.command, rest
+        )
 
 
 class UnexpectedExit(Failure):
@@ -69,31 +108,56 @@ class UnexpectedExit(Failure):
     - The last 10 lines of stdout, if it was hidden;
     - The last 10 lines of stderr, if it was hidden and non-empty (e.g.
       pty=False; when pty=True, stderr never happens.)
+
+    .. versionadded:: 1.0
     """
+
     def __str__(self):
-        already_printed = ' already printed'
-        if 'stdout' not in self.result.hide:
-            stdout = already_printed
-        else:
-            stdout = _tail(self.result.stdout)
-        if self.result.pty:
-            stderr = " n/a (PTYs have no stderr)"
-        else:
-            if 'stderr' not in self.result.hide:
-                stderr = already_printed
-            else:
-                stderr = _tail(self.result.stderr)
-        return """Encountered a bad command exit code!
+        stdout, stderr = self.streams_for_display()
+        command = self.result.command
+        exited = self.result.exited
+        template = """Encountered a bad command exit code!
 
-Command: {0!r}
+Command: {!r}
 
-Exit code: {1}
+Exit code: {}
 
-Stdout:{2}
+Stdout:{}
 
-Stderr:{3}
+Stderr:{}
 
-""".format(self.result.command, self.result.exited, stdout, stderr)
+"""
+        return template.format(command, exited, stdout, stderr)
+
+    def __repr__(self):
+        return self._repr(exited=self.result.exited)
+
+
+class CommandTimedOut(Failure):
+    """
+    Raised when a subprocess did not exit within a desired timeframe.
+    """
+
+    def __init__(self, result, timeout):
+        super(CommandTimedOut, self).__init__(result)
+        self.timeout = timeout
+
+    def __repr__(self):
+        return self._repr(timeout=self.timeout)
+
+    def __str__(self):
+        stdout, stderr = self.streams_for_display()
+        command = self.result.command
+        template = """Command did not complete within {} seconds!
+
+Command: {!r}
+
+Stdout:{}
+
+Stderr:{}
+
+"""
+        return template.format(self.timeout, command, stdout, stderr)
 
 
 class AuthFailure(Failure):
@@ -104,13 +168,16 @@ class AuthFailure(Failure):
         `.Result` objects attached to these exceptions typically lack exit code
         information, since the command was never fully executed - the exception
         was raised instead.
+
+    .. versionadded:: 1.0
     """
+
     def __init__(self, result, prompt):
         self.result = result
         self.prompt = prompt
 
     def __str__(self):
-        err = "The password submitted to prompt {0!r} was rejected."
+        err = "The password submitted to prompt {!r} was rejected."
         return err.format(self.prompt)
 
 
@@ -119,7 +186,10 @@ class ParseError(Exception):
     An error arising from the parsing of command-line flags/arguments.
 
     Ambiguous input, invalid task names, invalid flags, etc.
+
+    .. versionadded:: 1.0
     """
+
     def __init__(self, msg, context=None):
         super(ParseError, self).__init__(msg)
         self.context = context
@@ -127,12 +197,34 @@ class ParseError(Exception):
 
 class Exit(Exception):
     """
-    Simple stand-in for SystemExit that lets us gracefully exit.
+    Simple custom stand-in for SystemExit.
 
-    Removes lots of scattered sys.exit calls, improves testability.
+    Replaces scattered sys.exit calls, improves testability, allows one to
+    catch an exit request without intercepting real SystemExits (typically an
+    unfriendly thing to do, as most users calling `sys.exit` rather expect it
+    to truly exit.)
+
+    Defaults to a non-printing, exit-0 friendly termination behavior if the
+    exception is uncaught.
+
+    If ``code`` (an int) given, that code is used to exit.
+
+    If ``message`` (a string) given, it is printed to standard error, and the
+    program exits with code ``1`` by default (unless overridden by also giving
+    ``code`` explicitly.)
+
+    .. versionadded:: 1.0
     """
-    def __init__(self, code=0):
-        self.code = code
+
+    def __init__(self, message=None, code=None):
+        self.message = message
+        self._code = code
+
+    @property
+    def code(self):
+        if self._code is not None:
+            return self._code
+        return 1 if self.message else 0
 
 
 class PlatformError(Exception):
@@ -143,14 +235,20 @@ class PlatformError(Exception):
     module.
 
     Typically used to present a clearer error message to the user.
+
+    .. versionadded:: 1.0
     """
+
     pass
 
 
 class AmbiguousEnvVar(Exception):
     """
     Raised when loading env var config keys has an ambiguous target.
+
+    .. versionadded:: 1.0
     """
+
     pass
 
 
@@ -160,25 +258,37 @@ class UncastableEnvVar(Exception):
 
     E.g. trying to stuff ``MY_VAR="foo"`` into ``{'my_var': ['uh', 'oh']}``
     doesn't make any sense until/if we implement some sort of transform option.
+
+    .. versionadded:: 1.0
     """
+
     pass
 
 
 class UnknownFileType(Exception):
     """
     A config file of an unknown type was specified and cannot be loaded.
+
+    .. versionadded:: 1.0
     """
+
     pass
 
 
-#: A namedtuple wrapping a thread-borne exception & that thread's arguments.
-#: Mostly used as an intermediate between `.ExceptionHandlingThread` (which
-#: preserves initial exceptions) and `.ThreadException` (which holds 1..N such
-#: exceptions, as typically multiple threads are involved.)
-ExceptionWrapper = namedtuple(
-    'ExceptionWrapper',
-    'kwargs type value traceback'
-)
+class UnpicklableConfigMember(Exception):
+    """
+    A config file contained module objects, which can't be pickled/copied.
+
+    We raise this more easily catchable exception instead of letting the
+    (unclearly phrased) TypeError bubble out of the pickle module. (However, to
+    avoid our own fragile catching of that error, we head it off by explicitly
+    testing for module members.)
+
+    .. versionadded:: 1.0.2
+    """
+
+    pass
+
 
 def _printable_kwargs(kwargs):
     """
@@ -190,20 +300,21 @@ def _printable_kwargs(kwargs):
     printable = {}
     for key, value in six.iteritems(kwargs):
         item = value
-        if key == 'args':
+        if key == "args":
             item = []
             for arg in value:
                 new_arg = arg
-                if hasattr(arg, '__len__') and len(arg) > 10:
+                if hasattr(arg, "__len__") and len(arg) > 10:
                     msg = "<... remainder truncated during error display ...>"
                     new_arg = arg[:10] + [msg]
                 item.append(new_arg)
         printable[key] = item
     return printable
 
+
 class ThreadException(Exception):
     """
-    One or more exceptions were raised within background (usually I/O) threads.
+    One or more exceptions were raised within background threads.
 
     The real underlying exceptions are stored in the `exceptions` attribute;
     see its documentation for data structure details.
@@ -211,11 +322,14 @@ class ThreadException(Exception):
     .. note::
         Threads which did not encounter an exception, do not contribute to this
         exception object and thus are not present inside `exceptions`.
+
+    .. versionadded:: 1.0
     """
-    #: A tuple of `ExceptionWrappers <ExceptionWrapper>` containing the initial
-    #: thread constructor kwargs (because `threading.Thread` subclasses should
-    #: always be called with kwargs) and the caught exception for that thread
-    #: as seen by `sys.exc_info` (so: type, value, traceback).
+
+    #: A tuple of `ExceptionWrappers <invoke.util.ExceptionWrapper>` containing
+    #: the initial thread constructor kwargs (because `threading.Thread`
+    #: subclasses should always be called with kwargs) and the caught exception
+    #: for that thread as seen by `sys.exc_info` (so: type, value, traceback).
     #:
     #: .. note::
     #:     The ordering of this attribute is not well-defined.
@@ -233,22 +347,26 @@ class ThreadException(Exception):
         details = []
         for x in self.exceptions:
             # Build useful display
-            detail = "Thread args: {0}\n\n{1}"
-            details.append(detail.format(
-                pformat(_printable_kwargs(x.kwargs)),
-                "\n".join(format_exception(x.type, x.value, x.traceback)),
-            ))
+            detail = "Thread args: {}\n\n{}"
+            details.append(
+                detail.format(
+                    pformat(_printable_kwargs(x.kwargs)),
+                    "\n".join(format_exception(x.type, x.value, x.traceback)),
+                )
+            )
         args = (
             len(self.exceptions),
             ", ".join(x.type.__name__ for x in self.exceptions),
             "\n\n".join(details),
         )
         return """
-Saw {0} exceptions within threads ({1}):
+Saw {} exceptions within threads ({}):
 
 
-{2}
-""".format(*args)
+{}
+""".format(
+            *args
+        )
 
 
 class WatcherError(Exception):
@@ -262,7 +380,10 @@ class WatcherError(Exception):
     `.Runner` catches these and attaches them to `.Failure` exceptions so they
     can be referenced by intermediate code and/or act as extra info for end
     users.
+
+    .. versionadded:: 1.0
     """
+
     pass
 
 
@@ -272,5 +393,22 @@ class ResponseNotAccepted(WatcherError):
 
     Mostly used by `.FailingResponder` and subclasses, e.g. "oh dear I
     autosubmitted a sudo password and it was incorrect."
+
+    .. versionadded:: 1.0
     """
+
+    pass
+
+
+class SubprocessPipeError(Exception):
+    """
+    Some problem was encountered handling subprocess pipes (stdout/err/in).
+
+    Typically only for corner cases; most of the time, errors in this area are
+    raised by the interpreter or the operating system, and end up wrapped in a
+    `.ThreadException`.
+
+    .. versionadded:: 1.3
+    """
+
     pass

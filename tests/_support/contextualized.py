@@ -1,28 +1,30 @@
-from spec import eq_
-
 from invoke import task
 
 
 @task
-def go(ctx):
-    return ctx
+def go(c):
+    return c
+
 
 @task
 def check_warn(c):
     # default: False
-    eq_(c.config.run.warn, True)
+    assert c.config.run.warn is True
+
 
 @task
 def check_pty(c):
     # default: False
-    eq_(c.config.run.pty, True)
+    assert c.config.run.pty is True
+
 
 @task
 def check_hide(c):
     # default: None
-    eq_(c.config.run.hide, 'both')
+    assert c.config.run.hide == "both"
+
 
 @task
 def check_echo(c):
     # default: False
-    eq_(c.config.run.echo, True)
+    assert c.config.run.echo is True

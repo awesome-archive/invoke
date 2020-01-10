@@ -8,6 +8,7 @@ from . import __version__, Program
 
 program = Program(
     name="Invoke",
-    binary='inv[oke]',
+    binary="inv[oke]",
+    binary_names=["invoke", "inv"],
     version=__version__,
 )
